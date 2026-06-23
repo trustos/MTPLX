@@ -53,6 +53,7 @@ from .sampling import (
     residual_distribution,
     sample_from_distribution,
 )
+from .thinking_budget import make_thinking_budget
 
 Mode = Literal["ar", "mtp1", "mtpk", "mtpa"]
 VerifyStrategy = Literal[
@@ -3507,6 +3508,7 @@ def generate_ar(
     events: list[dict] = []
     repetition_config = _repetition_stop_config(bool(repetition_stop))
     repetition_result: RepetitionStopResult | None = None
+    thinking_budget = make_thinking_budget(prompt_ids, rt.tokenizer)
     target_decode_time = 0.0
     target_forward_graph_time = 0.0
     target_eval_time = 0.0
@@ -3591,7 +3593,12 @@ def generate_ar(
         emit_trace()
 
     for step in range(max_tokens):
-        token, _ = _sample_from_logits(logits[0], sampler, rng)
+        if thinking_budget is not None:
+            thinking_budget.observe(tokens)
+        if thinking_budget is not None and thinking_budget.should_force():
+            token = thinking_budget.forced_token()
+        else:
+            token, _ = _sample_from_logits(logits[0], sampler, rng)
         tokens.append(token)
         emit_token(token)
         events.append({"step": step, "token": token})
@@ -3753,6 +3760,7 @@ def generate_mtp1(
     events: list[dict] = []
     repetition_config = _repetition_stop_config(bool(repetition_stop))
     repetition_result: RepetitionStopResult | None = None
+    thinking_budget = make_thinking_budget(prompt_ids, rt.tokenizer)
     accepted = rejected = drafted = 0
     skipped = 0
     draft_time = verify_time = 0.0
@@ -3782,9 +3790,21 @@ def generate_mtp1(
                 }
             )
             break
+        if thinking_budget is not None:
+            thinking_budget.observe(tokens)
         primary_already_emitted = pending_primary is not None
         if pending_primary is None:
-            primary, _ = _sample_from_logits(logits[0], sampler, rng)
+            if thinking_budget is not None and thinking_budget.should_force():
+                primary = thinking_budget.forced_token()
+                events.append(
+                    {
+                        "step": step,
+                        "thinking_budget_forced": True,
+                        "thinking_tokens": thinking_budget.thinking_tokens,
+                    }
+                )
+            else:
+                primary, _ = _sample_from_logits(logits[0], sampler, rng)
             tokens.append(primary)
         else:
             primary = pending_primary
@@ -4556,6 +4576,7 @@ def generate_mtpk(
     started_all = time.perf_counter()
     repetition_config = _repetition_stop_config(bool(repetition_stop))
     repetition_result: RepetitionStopResult | None = None
+    thinking_budget = make_thinking_budget(prompt_ids, rt.tokenizer)
     draft_time = verify_time = 0.0
     verify_forward_time = 0.0
     verify_eval_time = 0.0
@@ -5319,9 +5340,21 @@ def generate_mtpk(
             streamed_token_count = min(streamed_token_count, len(tokens))
             emit_trace(force=True)
             break
+        if thinking_budget is not None:
+            thinking_budget.observe(tokens)
         primary_already_emitted = pending_primary is not None
         if pending_primary is None:
-            primary, _ = _sample_from_logits(logits[0], sampler, rng)
+            if thinking_budget is not None and thinking_budget.should_force():
+                primary = thinking_budget.forced_token()
+                events.append(
+                    {
+                        "step": step,
+                        "thinking_budget_forced": True,
+                        "thinking_tokens": thinking_budget.thinking_tokens,
+                    }
+                )
+            else:
+                primary, _ = _sample_from_logits(logits[0], sampler, rng)
             tokens.append(primary)
             emit_new_tokens()
         else:
@@ -6949,6 +6982,7 @@ def generate_mtpa(
     prompt_eval_time = target_time
     tokens: list[int] = []
     events: list[dict] = []
+    thinking_budget = make_thinking_budget(prompt_ids, rt.tokenizer)
     accepted = rejected = drafted = 0
     accepted_by_depth = [0 for _ in range(max_depth)]
     drafted_by_depth = [0 for _ in range(max_depth)]
@@ -6958,7 +6992,12 @@ def generate_mtpa(
 
     step = 0
     while len(tokens) < max_tokens:
-        primary, _ = _sample_from_logits(logits[0], sampler, rng)
+        if thinking_budget is not None:
+            thinking_budget.observe(tokens)
+        if thinking_budget is not None and thinking_budget.should_force():
+            primary = thinking_budget.forced_token()
+        else:
+            primary, _ = _sample_from_logits(logits[0], sampler, rng)
         planned_depth = policy.current_depth
         event = {
             "step": step,
